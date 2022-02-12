@@ -1,0 +1,48 @@
+diff --color -ruN src/elf.F ../vasp.6.3.0_ELF_fixed/src/elf.F
+--- src/elf.F	2022-01-20 15:10:06.000000000 +0000
++++ ../vasp.6.3.0_ELF_fixed/src/elf.F	2022-02-12 13:20:47.301704292 +0000
+@@ -46,6 +46,8 @@
+       END IF
+ #endif
+       CELF=0
++
++      NSPIN=MIN(WDES%NCDIJ,2)
+       IF (WDES%NCDIJ==4) THEN
+          WRITE(*,*) 'WARNING: ELF not implemented for non collinear case'
+          RETURN
+@@ -212,7 +214,7 @@
+ !=======================================================================
+ !  calculate ELF (Nature, 371(1994)683-686)
+ !=======================================================================
+-      CALL ELFCAL(CHDEN(1,ISP),CR,CDWORK,CNEW,GRID_SOFT)
++      CALL ELFCAL(CHDEN(1,ISP),CR,CDWORK,CNEW,GRID_SOFT,NSPIN)
+ 
+ ! Fourier-Transformation of ELF to real space
+       CALL FFT_RC_SCALE(CDWORK,CELF(1,ISP),GRID_SOFT)
+@@ -240,7 +242,7 @@
+       END SUBROUTINE
+ 
+ 
+-      SUBROUTINE ELFCAL(CHDEN,LAPLAC,CKINE,CGRDSQ,GRID)
++      SUBROUTINE ELFCAL(CHDEN,LAPLAC,CKINE,CGRDSQ,GRID,NSPIN)
+       USE prec
+       USE mpimy
+       USE mgrid
+@@ -256,7 +258,7 @@
+ !  calculate ELF (e.g.: Nature, 371(1994)683-686)
+ !            _
+ !            h^2    *    2      T.........kinetic energy
+-! T    = - 2 --- Psi grad Psi   T+TCORR...pos.definite kinetic energy
++! T    =   - --- Psi grad Psi   T+TCORR...pos.definite kinetic energy
+ !            2 m                TBOS......T of an ideal Bose-gas
+ !          _                                (=infimum of T+TCORR)
+ !        1 h^2      2           DH........T of hom.non-interact.e- - gas
+@@ -282,7 +284,7 @@
+        IF (REAL(CHDEN(N), KIND=q) < 0.0_q) THEN
+           DH = 0.0_q
+        ELSE 
+-          DH = 0.2_q*HSQDTM/PISQ* (3*PISQ* REAL( CHDEN(N) ,KIND=q) )**FIVTHI
++          DH = 0.2_q/NSPIN*HSQDTM/PISQ* (3*PISQ* REAL( NSPIN*CHDEN(N) ,KIND=q) )**FIVTHI
+        ENDIF
+        CKINE(N)=1/(1+((T+TCORR-TBOS)/MAX(DH,1E-8_q))**2)
+       ENDDO
