@@ -1,6 +1,6 @@
-diff --color -ruN src/elf.F ../vasp.6.3.0_ELF_fixed/src/elf.F
+diff --color -ruN src/elf.F ../patched/src/elf.F
 --- src/elf.F	2022-01-20 15:10:06.000000000 +0000
-+++ ../vasp.6.3.0_ELF_fixed/src/elf.F	2022-02-12 13:20:47.301704292 +0000
++++ ../patched/src/elf.F	2022-10-18 19:13:52.389525336 +0100
 @@ -46,6 +46,8 @@
        END IF
  #endif
@@ -37,12 +37,21 @@ diff --color -ruN src/elf.F ../vasp.6.3.0_ELF_fixed/src/elf.F
  !            2 m                TBOS......T of an ideal Bose-gas
  !          _                                (=infimum of T+TCORR)
  !        1 h^2      2           DH........T of hom.non-interact.e- - gas
-@@ -282,7 +284,7 @@
+@@ -282,9 +284,15 @@
         IF (REAL(CHDEN(N), KIND=q) < 0.0_q) THEN
            DH = 0.0_q
         ELSE 
 -          DH = 0.2_q*HSQDTM/PISQ* (3*PISQ* REAL( CHDEN(N) ,KIND=q) )**FIVTHI
 +          DH = 0.2_q/NSPIN*HSQDTM/PISQ* (3*PISQ* REAL( NSPIN*CHDEN(N) ,KIND=q) )**FIVTHI
         ENDIF
-        CKINE(N)=1/(1+((T+TCORR-TBOS)/MAX(DH,1E-8_q))**2)
+-       CKINE(N)=1/(1+((T+TCORR-TBOS)/MAX(DH,1E-8_q))**2)
++       ! Sometimes D goes to zero faster than DH outside the slab, molecule
++       ! leading to fictious high localization
++       ! Or, for some casese, only one orbital is occupied so that D is exact
++       ! zero, making ELF loose its contrast.
++       ! to address this, we add 1E-5 to D so that DH goes to zero faster.
++       ! ref: Acta Phys. -Chim. Sin. 2011, 27 (12), 2786-2792
++       CKINE(N)=1/(1+((T+TCORR-TBOS+1E-5_q)/MAX(DH,1E-8_q))**2)
        ENDDO
+ 
+       RETURN
