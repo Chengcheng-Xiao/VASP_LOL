@@ -1,0 +1,298 @@
+diff --color --color -ruN src/base.F ../vasp.6.3.0/src/base.F
+--- src/base.F	2022-01-20 15:10:06.000000000 +0000
++++ ../vasp.6.3.0/src/base.F	2022-12-18 11:36:30.131945935 +0000
+@@ -140,6 +140,8 @@
+         LOGICAL LPDENS               !< write partial density (charge density for one band)
+         INTEGER LORBIT               !< write orbit/dos
+         LOGICAL LELF                 !< write elf
++        LOGICAL LLOL                 !< write lol
++	LOGICAL LELID                !< write ELI-D
+         LOGICAL LOPTICS              !< calculate/write optical matrix elements
+         LOGICAL LPETIM               !< timing information
+         INTEGER IUVTOT               !< unit for local potential
+diff --color --color -ruN src/elf.F ../vasp.6.3.0/src/elf.F
+--- src/elf.F	2022-01-20 15:10:06.000000000 +0000
++++ ../vasp.6.3.0/src/elf.F	2022-12-18 11:42:32.348705835 +0000
+@@ -10,7 +10,7 @@
+ !
+ !***********************************************************************
+       SUBROUTINE ELF(GRID,GRID_SOFT,LATT_CUR,SYMM,NIOND, W,WDES,  &
+-               CHDEN,CELF)
++               CHDEN,CELF,LLOL,LELID)
+        USE prec
+        USE msymmetry
+        USE base
+@@ -27,6 +27,10 @@
+       TYPE (symmetry)    SYMM
+       TYPE (wavespin)    W
+       TYPE (wavedes)     WDES
++! calculate LOL
++      LOGICAL :: LLOL
++! calculate ELI-D
++      LOGICAL :: LELID
+ ! final resul
+       COMPLEX(q)   CELF(GRID_SOFT%MPLWV,WDES%NCDIJ), &
+                    CHDEN(GRID_SOFT%MPLWV,WDES%NCDIJ)
+@@ -46,6 +50,8 @@
+       END IF
+ #endif
+       CELF=0
++
++      NSPIN=MIN(WDES%NCDIJ,2)
+       IF (WDES%NCDIJ==4) THEN
+          WRITE(*,*) 'WARNING: ELF not implemented for non collinear case'
+          RETURN
+@@ -212,7 +218,7 @@
+ !=======================================================================
+ !  calculate ELF (Nature, 371(1994)683-686)
+ !=======================================================================
+-      CALL ELFCAL(CHDEN(1,ISP),CR,CDWORK,CNEW,GRID_SOFT)
++      CALL ELFCAL(CHDEN(1,ISP),CR,CDWORK,CNEW,GRID_SOFT,NSPIN,LLOL,LELID)
+ 
+ ! Fourier-Transformation of ELF to real space
+       CALL FFT_RC_SCALE(CDWORK,CELF(1,ISP),GRID_SOFT)
+@@ -240,7 +246,7 @@
+       END SUBROUTINE
+ 
+ 
+-      SUBROUTINE ELFCAL(CHDEN,LAPLAC,CKINE,CGRDSQ,GRID)
++      SUBROUTINE ELFCAL(CHDEN,LAPLAC,CKINE,CGRDSQ,GRID,NSPIN,LLOL,LELID)
+       USE prec
+       USE mpimy
+       USE mgrid
+@@ -248,6 +254,11 @@
+       IMPLICIT COMPLEX(q) (C)
+       IMPLICIT REAL(q) (A-B,D-H,O-Z)
+ 
++! calculate LOL
++      LOGICAL :: LLOL
++! calculate ELI-D
++      LOGICAL :: LELID
++
+       TYPE (grid_3d) GRID
+ 
+       RGRID CHDEN(GRID%RL%NP),CKINE(GRID%RL%NP),CGRDSQ(GRID%RL%NP)
+@@ -256,7 +267,7 @@
+ !  calculate ELF (e.g.: Nature, 371(1994)683-686)
+ !            _
+ !            h^2    *    2      T.........kinetic energy
+-! T    = - 2 --- Psi grad Psi   T+TCORR...pos.definite kinetic energy
++! T    =   - --- Psi grad Psi   T+TCORR...pos.definite kinetic energy
+ !            2 m                TBOS......T of an ideal Bose-gas
+ !          _                                (=infimum of T+TCORR)
+ !        1 h^2      2           DH........T of hom.non-interact.e- - gas
+@@ -282,9 +293,28 @@
+        IF (REAL(CHDEN(N), KIND=q) < 0.0_q) THEN
+           DH = 0.0_q
+        ELSE 
+-          DH = 0.2_q*HSQDTM/PISQ* (3*PISQ* REAL( CHDEN(N) ,KIND=q) )**FIVTHI
++          !DH = 0.2_q*HSQDTM/PISQ* (3*PISQ* REAL( CHDEN(N) ,KIND=q) )**FIVTHI
++	  DH = 0.2_q/NSPIN*HSQDTM/PISQ* (3*PISQ*REAL(NSPIN*CHDEN(N),KIND=q))**FIVTHI
++       ENDIF
++
++       ! Sometimes D goes to zero faster than DH outside the slab, molecule
++       ! leading to fictious high localization
++       ! Or, for some casese, only one orbital is occupied so that D is exact
++       ! zero, making ELF loose its contrast.
++       ! to address this, we add 1E-5 to D so that DH goes to zero faster.
++       ! ref: Acta Phys. -Chim. Sin. 2011, 27 (12), 2786-2792
++       CKINE(N)=1/(1+((T+TCORR-TBOS+1E-5_q)/MAX(DH,1E-8_q))**2)
++      
++       ! Do we want LOL? 
++       IF (LLOL) THEN
++          CKINE(N)=1/(1+((T+TCORR)/MAX(DH,1E-8_q))**2)
++       ! Do we wand ELID?
++       ELSE IF (LELID) THEN
++	   CKINE(N)=REAL(CHDEN(N),KIND=q)* &
++	           (12.0_q/(REAL(CHDEN(N),KIND=q)*(T+TCORR-TBOS)))**(3.0_q/8.0_q)
++       ELSE
++          CKINE(N)=1/(1+((T+TCORR-TBOS)/MAX(DH,1E-8_q))**2)
+        ENDIF
+-       CKINE(N)=1/(1+((T+TCORR-TBOS)/MAX(DH,1E-8_q))**2)
+       ENDDO
+ 
+       RETURN
+diff --color --color -ruN src/main.F ../vasp.6.3.0/src/main.F
+--- src/main.F	2022-01-20 15:10:07.000000000 +0000
++++ ../vasp.6.3.0/src/main.F	2022-12-18 12:12:01.364879387 +0000
+@@ -645,7 +645,7 @@
+           KPOINTS%SIGMA,KPOINTS%LTET,INFO%WEIMIN,INFO%EBREAK,INFO%DEPER,IO%NWRITE,INFO%LCORR, &
+           IO%IDIOT,T_INFO%NIONS,T_INFO%NTYPP,IO%LMUSIC,IO%LOPTICS,STM, &
+           INFO%ISPIN,T_INFO%ATOMOM,NIOND,IO%LWAVE,IO%LDOWNSAMPLE,IO%LCHARG,IO%LVTOT,IO%LVHAR,INFO%SZPREC, &
+-          INFO%ENAUG,IO%LORBIT,IO%LELF,T_INFO%ROPT,INFO%ENINI, &
++          INFO%ENAUG,IO%LORBIT,IO%LELF,IO%LLOL,IO%LELID,T_INFO%ROPT,INFO%ENINI, &
+           NGX,NGY,NGZ,NGXC,NGYC,NGZC,NBANDS,WDES%NBANDSLOW,WDES%NBANDSHIGH,NEDOS,NBLK,LATT_CUR, &
+           LPLANE_WISE,LCOMPAT,LMAX_CALC,SET_LMAX_MIX_TO,WDES%NSIM,LPARD,LPAW,LADDGRID, &
+           WDES%LNONCOLLINEAR,WDES%LSORBIT,WDES%SAXIS,INFO%LMETAGGA, &
+@@ -1516,7 +1516,7 @@
+      &      AOMEGA,AOMEGA/(AUTOA)**3, &
+      &      QF,QF/AUTOA,QF**2*RYTOEV,QF**2,SQRT(QF*4/PI)/AUTOA
+       WRITE(TIU6,*)
+-      WRITE(TIU6,7224) IO%LWAVE,IO%LDOWNSAMPLE,IO%LCHARG,IO%LVTOT,IO%LVHAR,IO%LELF,IO%LORBIT
++      WRITE(TIU6,7224) IO%LWAVE,IO%LDOWNSAMPLE,IO%LCHARG,IO%LVTOT,IO%LVHAR,IO%LELF,IO%LLOL,IO%LELID,IO%LORBIT
+ 
+       CALL WRITE_EFIELD(TIU6)
+       ENDIF
+@@ -1654,6 +1654,8 @@
+      &       '   LVTOT        = ',L6,  '    write LOCPOT, total local potential' / &
+      &       '   LVHAR        = ',L6,  '    write LOCPOT, Hartree potential only' / &
+      &       '   LELF         = ',L6,  '    write electronic localiz. function (ELF)'/&
++     &       '   LLOL         = ',L6,  '    write localiz. orbital locator (LOL)'/&
++     &       '   LELID        = ',L6,  '    write electron localization index D (ELI-D)'/&
+      &       '   LORBIT       = ',I6,  '    0 simple, 1 ext, 2 COOP (PROOUT), +10 PAW based schemes'//)
+ 
+        CALL WRITE_CL_SHIFT(IO%IU6)
+@@ -1690,7 +1692,7 @@
+           KPOINTS%SIGMA,KPOINTS%LTET,INFO%WEIMIN,INFO%EBREAK,INFO%DEPER,IO%NWRITE,INFO%LCORR, &
+           IO%IDIOT,T_INFO%NIONS,T_INFO%NTYPP,IO%LMUSIC,IO%LOPTICS,STM, &
+           INFO%ISPIN,T_INFO%ATOMOM,NIOND,IO%LWAVE,IO%LDOWNSAMPLE,IO%LCHARG,IO%LVTOT,IO%LVHAR,INFO%SZPREC, &
+-          INFO%ENAUG,IO%LORBIT,IO%LELF,T_INFO%ROPT,INFO%ENINI, &
++          INFO%ENAUG,IO%LORBIT,IO%LELF,IO%LLOL,IO%LELID,T_INFO%ROPT,INFO%ENINI, &
+           NGX,NGY,NGZ,NGXC,NGYC,NGZC,NBANDS,WDES%NBANDSLOW,WDES%NBANDSHIGH,NEDOS,NBLK,LATT_CUR, &
+           LPLANE_WISE,LCOMPAT,LMAX_CALC,SET_LMAX_MIX_TO,WDES%NSIM,LPARD,LPAW,LADDGRID, &
+           WDES%LNONCOLLINEAR,WDES%LSORBIT,WDES%SAXIS,INFO%LMETAGGA, &
+@@ -5073,7 +5075,7 @@
+       ALLOCATE(CWORK(GRID_SOFT%MPLWV,WDES%NCDIJ))
+ 
+       CALL ELF(GRID,GRID_SOFT,LATT_CUR,SYMM,NIOND, W,WDES,  &
+-               CHDEN,CWORK)
++               CHDEN,CWORK,.FALSE.,.FALSE.)
+ 
+ #ifdef MPI
+      IF (WDES%COMM_KINTER%NODE_ME.EQ.1) THEN
+@@ -5096,6 +5098,69 @@
+ #ifdef MPI
+       ENDIF
+ #endif
++
++!=======================================================================
++!  calculate LOL
++!=======================================================================
++      IF (IO%LLOL) THEN
++      ALLOCATE(CWORK(GRID_SOFT%MPLWV,WDES%NCDIJ))
++
++      CALL ELF(GRID,GRID_SOFT,LATT_CUR,SYMM,NIOND, W,WDES,  &
++               CHDEN,CWORK,.TRUE.,.FALSE.)
++
++#ifdef MPI
++     IF (WDES%COMM_KINTER%NODE_ME.EQ.1) THEN
++#endif
++! write LOL to file LOLCAR
++      io_begin
++      OPEN(UNIT=53,FILE='LOLCAR',STATUS='UNKNOWN')
++      CALL OUTPOS(53,.FALSE.,INFO%SZNAM1,T_INFO,LATT_CUR%SCALE,LATT_CUR%A,.FALSE.,DYN%POSION)
++      io_end
++
++      DO ISP=1,WDES%NCDIJ
++         CALL OUTCHG(GRID_SOFT,53,.FALSE.,CWORK(1,ISP))
++      ENDDO
++
++      DEALLOCATE(CWORK)
++
++      do_io CLOSE(53)
++
++      END IF
++#ifdef MPI
++      ENDIF
++#endif
++
++!=======================================================================
++!  calculate ELI-D
++!=======================================================================
++      IF (IO%LELID) THEN
++      ALLOCATE(CWORK(GRID_SOFT%MPLWV,WDES%NCDIJ))
++
++      CALL ELF(GRID,GRID_SOFT,LATT_CUR,SYMM,NIOND, W,WDES,  &
++               CHDEN,CWORK,.FALSE.,.TRUE.)
++
++#ifdef MPI
++     IF (WDES%COMM_KINTER%NODE_ME.EQ.1) THEN
++#endif
++! write LOL to file LOLCAR
++      io_begin
++      OPEN(UNIT=53,FILE='ELIDCAR',STATUS='UNKNOWN')
++      CALL OUTPOS(53,.FALSE.,INFO%SZNAM1,T_INFO,LATT_CUR%SCALE,LATT_CUR%A,.FALSE.,DYN%POSION)
++      io_end
++
++      DO ISP=1,WDES%NCDIJ
++         CALL OUTCHG(GRID_SOFT,53,.FALSE.,CWORK(1,ISP))
++      ENDDO
++
++      DEALLOCATE(CWORK)
++
++      do_io CLOSE(53)
++
++      END IF
++#ifdef MPI
++      ENDIF
++#endif
++
+ #ifdef MPI
+       IF (WDES%COMM_KINTER%NODE_ME.EQ.1) THEN
+ #endif
+diff --color --color -ruN src/reader.F ../vasp.6.3.0/src/reader.F
+--- src/reader.F	2022-01-20 15:10:06.000000000 +0000
++++ ../vasp.6.3.0/src/reader.F	2022-12-18 11:52:35.971306064 +0000
+@@ -14,7 +14,7 @@
+      &        SIGMA,LTET,WEIMIN,EBREAK,DEPER,NWRITE,LCORR, &
+      &        IDIOT,NIONS,NTYPP,lmusic,LOPTICS,STM, &
+      &        ISPIN,ATOMOM,NIOND,LWAVE,LDOWNSAMPLE,LCHARG,LVTOT,LVHAR,SZPREC, &
+-     &        ENAUG,LORBIT,LELF,ROPT,ENINI, &
++     &        ENAUG,LORBIT,LELF,LLOL,LELID,ROPT,ENINI, &
+      &        NGX,NGY,NGZ,NGXF,NGYF,NGZF,NBANDS,NBANDSLOW,NBANDSHIGH,NEDOS,NBLK,LATT_CUR, &
+      &        LPLANE_WISE,LCOMPAT,LMAX_CALC,LMAX_MIX,NSIM,LPARD,LPAW,LADDGRID, &
+      &        LNONCOLLINEAR,LSORBIT,SAXIS,LMETAGGA, &
+@@ -61,7 +61,7 @@
+       CHARACTER (12)   SZPREC
+       LOGICAL   LDUM,MIXFIRST,LFOUND,LDIAG,LSUBROT,LREAL,LREALD,LPDENS,LTET,LOPTICS, &
+      &          LCORR,LOPEN,lmusic,LWAVE,LDOWNSAMPLE,LCHARG,LVTOT,LVHAR, &
+-     &          LORBIT_,LELF,LCOMPAT,LPARD,LPAW,LADDGRID, &
++     &          LORBIT_,LELF,LLOL,LELID,LCOMPAT,LPARD,LPAW,LADDGRID, &
+      &          LNONCOLLINEAR,LSORBIT,LMETAGGA, &
+      &          LBEEFENS,LBEEFBAS, &
+      &          LPLANE_WISE, &
+@@ -741,6 +741,14 @@
+       LELF=.FALSE.
+       CALL PROCESS_INCAR(LOPEN, IU0, IU5, 'LELF', LELF, IERR, WRITEXMLINCAR)
+ 
++! read in flag LLOL
++      LLOL=.FALSE.
++      CALL PROCESS_INCAR(LOPEN, IU0, IU5, 'LLOL', LLOL, IERR, WRITEXMLINCAR)
++
++! read in flag LLOL
++      LELID=.FALSE.
++      CALL PROCESS_INCAR(LOPEN, IU0, IU5, 'LELID', LELID, IERR, WRITEXMLINCAR)
++
+ ! read in flag LOPTICS
+       LOPTICS=.FALSE.
+ #ifndef noPAW
+diff --color --color -ruN src/xml_writer.F ../vasp.6.3.0/src/xml_writer.F
+--- src/xml_writer.F	2022-01-20 15:10:07.000000000 +0000
++++ ../vasp.6.3.0/src/xml_writer.F	2022-12-18 11:55:05.928906860 +0000
+@@ -27,7 +27,7 @@
+      &        SIGMA,LTET,WEIMIN,EBREAK,DEPER,NWRITE,LCORR, &
+      &        IDIOT,NIONS,NTYPP,lmusic,LOPTICS,STM, &
+      &        ISPIN,ATOMOM,NIOND,LWAVE,LDOWNSAMPLE,LCHARG,LVTOT,LVHAR,SZPREC, &
+-     &        ENAUG,LORBIT,LELF,ROPT,ENINI, &
++     &        ENAUG,LORBIT,LELF,LLOL,LELID,ROPT,ENINI, &
+      &        NGX,NGY,NGZ,NGXF,NGYF,NGZF,NBANDS,NBANDSLOW,NBANDSHIGH,NEDOS,NBLK,LATT_CUR, &
+      &        LPLANE_WISE,LCOMPAT,LMAX_CALC,LMAX_MIX,NSIM,LPARD,LPAW,LADDGRID, &
+      &        LNONCOLLINEAR,LSORBIT,SAXIS,LMETAGGA, &
+@@ -58,7 +58,7 @@
+ 
+       LOGICAL   LDUM,MIXFIRST,LFOUND,LDIAG,LSUBROT,LREAL,LREALD,LPDENS,LTET,LOPTICS, &
+      &          LCORR,LOPEN,lmusic,LWAVE,LCHARG,LVTOT,LVHAR, &
+-     &          LORBIT_,LELF,LCOMPAT,LPARD,LPAW,LADDGRID, &
++     &          LORBIT_,LELF,LLOL,LELID,LCOMPAT,LPARD,LPAW,LADDGRID, &
+      &          LNONCOLLINEAR,LSORBIT,LMETAGGA,LPLANE_WISE,LASPH,LORBITALREAL
+       LOGICAL   LDOWNSAMPLE
+       INTEGER   IGGA2
+@@ -235,6 +235,8 @@
+       CALL XML_INCAR('LVTOT','L',IDUM,RDUM,CDUM,LVTOT,CHARAC,1)
+       CALL XML_INCAR('LVHAR','L',IDUM,RDUM,CDUM,LVHAR,CHARAC,1)
+       CALL XML_INCAR('LELF','L',IDUM,RDUM,CDUM,LELF,CHARAC,1)
++      CALL XML_INCAR('LLOL','L',IDUM,RDUM,CDUM,LLOL,CHARAC,1)
++      CALL XML_INCAR('LELID','L',IDUM,RDUM,CDUM,LELID,CHARAC,1)
+       CALL XML_INCAR('LOPTICS','L',IDUM,RDUM,CDUM,LOPTICS,CHARAC,1)
+       CALL XML_INCAR_V('STM','F',IDUM,STM,CDUM,LDUM,CHARAC,7)
+       CALL XML_CLOSE_TAG
